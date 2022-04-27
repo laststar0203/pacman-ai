@@ -9,7 +9,7 @@ reward = None
 done = None
 info = None
 
-for _ in range(100000):
+for _ in range(1):
     screen = env.render()
 
     observation, reward, done, info = env.step(6)
@@ -18,4 +18,6 @@ for _ in range(100000):
 
     if done:
         env.reset()
+
+
 env.close()
