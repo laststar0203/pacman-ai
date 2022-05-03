@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import torch.nn as nn
 import torch.optim as optim
 
@@ -17,10 +18,6 @@ test_x = np.linspace(0, np.pi * 2, 60).reshape(60,1)
 test_y = np.sin(test_x)
 
 plt.plot(test_y)
-
-print(test_y)
-
-exit()
 
 # 입력층의 뉴런 수
 input_node = 1
@@ -42,10 +39,10 @@ alpha = 0.1
 
 # 4가지(sgd, momentum, RMSprop, Adam) 최적화 방법을 딕셔너리로 정의
 optimizer_option = {
-    'sgd': optim.SGD(lr=0.1),
-    'momentum': optim.SGD(lr=alpha, momentum=0.9),
-    'RM-Sprop': optim.RMSprop(lr=0.01),
-    'Adam': optim.Adam(lr=0.01)
+    'sgd': optim.SGD(params=model.parameters(), lr=0.1),
+    'momentum': optim.SGD(params=model.parameters(), lr=alpha, momentum=0.9),
+    'RM-Sprop': optim.RMSprop(params=model.parameters(),lr=0.01),
+    'Adam': optim.Adam(params=model.parameters() ,lr=0.01)
 }
 
 
@@ -63,8 +60,10 @@ criterion = nn.MSELoss()
 for optimizer_name, optimizer in optimizer_option.items():
 
     for epoch in range(50000):
-        output = model(train_x)
-        loss = criterion(output, train_Y)
+
+        output = model(torch.Tensor(train_x))
+
+        loss = criterion(output, torch.Tensor(train_Y))
 
         optimizer.zero_grad()
         loss.backward()

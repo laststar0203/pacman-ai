@@ -79,7 +79,7 @@ def train(q, q_target, memory, gamma, optimizer, batch_size):
         q_a = q_out.gather(1, a)  # 취한 action의 q값만 골라냄, 1번째 차원에서 골른다. [32,2 <-]
         max_q_prime = q_target(s_prime).max(1)[0].unsqueeze(1)
         # 차원 맞추기
-        target = r * gamma * max_q_prime * done_mask
+        target = r + gamma * max_q_prime * done_mask
         loss = F.smooth_l1_loss(q_a, target)
 
         optimizer.zero_grad()
