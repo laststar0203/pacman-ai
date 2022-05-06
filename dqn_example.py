@@ -36,9 +36,11 @@ class Qnet(nn.Module):
         self.fc3 = nn.Linear(128, 2)
 
     def forward(self, x):
+        print(x.size())
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
+
         return x
 
     def sample_action(self, obs, epsilon):
@@ -61,6 +63,7 @@ def train(q, q_target, memory, gamma, optimizer, batch_size):
         for transition in batch:
             # s는 상태, a는 액션, r은 리워드, s_prime은 다음 상태
             s, a, r, s_prime, done_mask = transition
+
             s_lst.append(s)
             # s와 차원을 맞추기 위함
             a_lst.append([a])
@@ -107,10 +110,12 @@ def main():
         # 에피소드가 올라갈수록 8%에서 1%로 줄임
         epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))
         s = env.reset()
-
+        print(s)
         for t in range(600):
             a = q.sample_action(torch.from_numpy(s).float(), epsilon)
+            print(s)
             s_prime, r, done, info = env.step(a)
+            print(type(s))
 
             # done_mask는 곱해지는 값이다 게임이 끝나지 않으면 0으로 결과가 나오게 할려고 함
             done_mask = 0.0 if done else 1.0
@@ -125,6 +130,9 @@ def main():
 
             if done:
                 break
+
+            import time
+            time.sleep(1)
 
         avg_t += t
 

@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+import numpy as np
+
 # Hyperparameters
 learning_rate = 0.0005
 gamma = 0.98
@@ -14,7 +16,7 @@ buffer_limit = 50000
 batch_size = 32
 
 
-class ReplayBuffer():
+class ReplayBuffer:
     def __init__(self):
         self.buffer = collections.deque(maxlen=buffer_limit)
 
@@ -23,19 +25,20 @@ class ReplayBuffer():
 
     def sample(self, n):
         mini_batch = random.sample(self.buffer, n)
-        s_lst, a_lst, r_lst, s_prime_lst, done_mask_lst = [], [], [], [], []
+        state_list, action_list, reward_list, state_prime_list, done_mask_list = [], [], [], [], []
 
         for transition in mini_batch:
-            s, a, r, s_prime, done_mask = transition
-            s_lst.append(s)
-            a_lst.append([a])
-            r_lst.append([r])
-            s_prime_lst.append(s_prime)
-            done_mask_lst.append([done_mask])
+            state, action, reward, state_prime, done_mask = transition
 
-        return torch.tensor(s_lst, dtype=torch.float), torch.tensor(a_lst), \
-               torch.tensor(r_lst), torch.tensor(s_prime_lst, dtype=torch.float), \
-               torch.tensor(done_mask_lst)
+            state_list.append(state)
+            action_list.append([action])
+            reward_list.append([reward])
+            state_prime_list.append(state_prime)
+            done_mask_list.append([done_mask])
+
+        return torch.stack(state_list), torch.tensor(action_list), \
+               torch.tensor(reward_list), torch.stack(state_prime_list), \
+               torch.tensor(done_mask_list)
 
     def size(self):
         return len(self.buffer)
@@ -44,14 +47,63 @@ class ReplayBuffer():
 class Qnet(nn.Module):
     def __init__(self):
         super(Qnet, self).__init__()
-        self.fc1 = nn.Linear(4, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, 2)
+        self._conv1 = nn.Conv2d(3, 16, (5, 3))
+        # self.bn1 = nn.BatchNorm2d(16)
+        self._max_pool1 = nn.MaxPool2d(kernel_size=(3, 2))
+
+        self._conv2 = nn.Conv2d(16, 32, (5, 3))
+        self._max_pool2 = nn.MaxPool2d(kernel_size=(3, 2))
+        # self.bn2 = nn.BatchNorm2d(32)
+        self._conv3 = nn.Conv2d(32, 64, (5, 3))
+        # self.bn3 = nn.BatchNorm2d(32)
+        self._max_pool3 = nn.MaxPool2d(kernel_size=(3, 2))
+
+        self._ln1 = nn.Linear(4608, 1024)
+        self._ln2 = nn.Linear(1024, 512)
+        self._ln3 = nn.Linear(512, 256)
+        self._ln4 = nn.Linear(256, 128)
+        self._ln5 = nn.Linear(128, 64)
+        self._ln6 = nn.Linear(64, 9)
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+
+        x = self._conv1(x)
+        x = F.relu(x)
+
+        x = self._max_pool1(x)
+
+        x = self._conv2(x)
+        x = F.relu(x)
+
+        x = self._max_pool2(x)
+
+        x = self._conv3(x)
+        x = F.relu(x)
+
+        x = self._max_pool3(x)
+
+        if x.dim() == 3:
+            x = x.view(-1)
+        else:
+            x = x.view(batch_size, -1)
+
+        x = self._ln1(x)
+        x = F.relu(x)
+
+        x = self._ln2(x)
+        x = F.relu(x)
+
+        x = self._ln3(x)
+        x = F.relu(x)
+
+        x = self._ln4(x)
+        x = F.relu(x)
+
+        x = self._ln5(x)
+        x = F.relu(x)
+
+        x = self._ln6(x)
+
         return x
 
     def sample_action(self, obs, epsilon):
@@ -63,58 +115,90 @@ class Qnet(nn.Module):
             return out.argmax().item()
 
 
-def train(q, q_target, memory, optimizer):
-    for i in range(10):
-        s, a, r, s_prime, done_mask = memory.sample(batch_size)
+def train(q_network, target_network, memory, optimizer):
+    state_list, action_list, reward_list, state_prime_list, \
+    done_mask_list = memory.sample(batch_size)
 
-        q_out = q(s)
-        q_a = q_out.gather(1, a)
-        max_q_prime = q_target(s_prime).max(1)[0].unsqueeze(1)
-        target = r + gamma * max_q_prime * done_mask
-        loss = F.smooth_l1_loss(q_a, target)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    output = q_network(state_list)
+    q_action = output.gather(1, action_list)
 
 
-def main():
-    env = gym.make('CartPole-v1')
-    q = Qnet()
-    q_target = Qnet()
-    q_target.load_state_dict(q.state_dict())
+    max_q_prime = target_network(state_prime_list).max(1)[0].unsqueeze(1)
+    target = reward_list + gamma * max_q_prime * done_mask_list
+    loss = F.smooth_l1_loss(q_action, target)
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+
+def preproess_state(state):
+    state = state[1:172, 1:160]
+    r = state[:, :, 0]
+    g = state[:, :, 1]
+    b = state[:, :, 2]
+
+    return np.asarray([r, g, b])
+
+
+if __name__ == '__main__':
+    env = gym.make('MsPacman-v0')
+
+    q_network = Qnet()
+    target_network = Qnet()
+    target_network.load_state_dict(q_network.state_dict())
+
     memory = ReplayBuffer()
 
     print_interval = 20
     score = 0.0
-    optimizer = optim.Adam(q.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(q_network.parameters(), lr=learning_rate)
+
+    render = False
 
     for n_epi in range(10000):
-        epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))  # Linear annealing from 8% to 1%
-        s = env.reset()
+        epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))
+
+        state = env.reset()
+        state = torch.tensor(preproess_state(state)).float()
         done = False
 
-        while not done:
-            a = q.sample_action(torch.from_numpy(s).float(), epsilon)
-            s_prime, r, done, info = env.step(a)
-            done_mask = 0.0 if done else 1.0
-            memory.put((s, a, r / 100.0, s_prime, done_mask))
-            s = s_prime
+        print(n_epi)
 
-            score += r
+        while not done:
+
+            # 순전파를 통한 액션 도출
+            action = q_network.sample_action(state, epsilon)
+            state_prime, reward, done, info = env.step(action)
+
+            state_prime = torch.tensor(preproess_state(state_prime)).float()
+
+            done_mask = 0.0 if done else 1.0
+
+            memory.put((state, action, reward / 100.0, state_prime, done_mask))
+            state = state_prime
+
+            score += reward
+
+            if render:
+                env.render()
+                import time
+                time.sleep(0.01)
+
             if done:
                 break
 
         if memory.size() > 2000:
-            train(q, q_target, memory, optimizer)
+            # 순전파, 역전파를 통한 학습
+            train(q_network, target_network, memory, optimizer)
+
+        if score / 20.0 > 300:
+            render = True
 
         if n_epi % print_interval == 0 and n_epi != 0:
-            q_target.load_state_dict(q.state_dict())
+            target_network.load_state_dict(q_network.state_dict())
             print("n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
                 n_epi, score / print_interval, memory.size(), epsilon * 100))
             score = 0.0
+
     env.close()
-
-
-if __name__ == '__main__':
-    main()
