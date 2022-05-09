@@ -54,16 +54,14 @@ class Qnet(nn.Module):
         self._conv2 = nn.Conv2d(16, 32, (5, 3))
         self._max_pool2 = nn.MaxPool2d(kernel_size=(3, 2))
         # self.bn2 = nn.BatchNorm2d(32)
-        self._conv3 = nn.Conv2d(32, 64, (5, 3))
+        self._conv3 = nn.Conv2d(32, 32, (5, 3))
         # self.bn3 = nn.BatchNorm2d(32)
         self._max_pool3 = nn.MaxPool2d(kernel_size=(3, 2))
 
-        self._ln1 = nn.Linear(4608, 1024)
-        self._ln2 = nn.Linear(1024, 512)
-        self._ln3 = nn.Linear(512, 256)
-        self._ln4 = nn.Linear(256, 128)
-        self._ln5 = nn.Linear(128, 64)
-        self._ln6 = nn.Linear(64, 9)
+        self._ln1 = nn.Linear(2304, 512)
+        self._ln2 = nn.Linear(512, 256)
+        self._ln3 = nn.Linear(256, 64)
+        self._ln4 = nn.Linear(64, 9)
 
     def forward(self, x):
 
@@ -97,12 +95,6 @@ class Qnet(nn.Module):
         x = F.relu(x)
 
         x = self._ln4(x)
-        x = F.relu(x)
-
-        x = self._ln5(x)
-        x = F.relu(x)
-
-        x = self._ln6(x)
 
         return x
 
@@ -163,19 +155,19 @@ if __name__ == '__main__':
         state = torch.tensor(preproess_state(state)).float()
         done = False
 
-        print(n_epi)
-
         while not done:
 
             # 순전파를 통한 액션 도출
             action = q_network.sample_action(state, epsilon)
             state_prime, reward, done, info = env.step(action)
 
+            reward = -1 if reward == 0 else reward
+
             state_prime = torch.tensor(preproess_state(state_prime)).float()
 
             done_mask = 0.0 if done else 1.0
 
-            memory.put((state, action, reward / 100.0, state_prime, done_mask))
+            memory.put((state, action, reward, state_prime, done_mask))
             state = state_prime
 
             score += reward
@@ -192,8 +184,9 @@ if __name__ == '__main__':
             # 순전파, 역전파를 통한 학습
             train(q_network, target_network, memory, optimizer)
 
-        if score / 20.0 > 300:
+        if score / print_interval > 700:
             render = True
+
 
         if n_epi % print_interval == 0 and n_epi != 0:
             target_network.load_state_dict(q_network.state_dict())
