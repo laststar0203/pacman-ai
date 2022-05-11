@@ -10,7 +10,7 @@ import torch.optim as optim
 import numpy as np
 
 # Hyperparameters
-learning_rate = 0.0005
+learning_rate = 0.1
 gamma = 0.98
 buffer_limit = 50000
 batch_size = 32
