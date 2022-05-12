@@ -3,12 +3,16 @@ import gym
 import random
 import collections
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-HyperParameter = collections.namedtuple('HyperParameter', ['batch_size', 'gamma', 'learning_rate'])
+from torchvision import transforms
+
+HyperParameter = collections.namedtuple('HyperParameter', ['batch_size', 'gamma', 'learning_rate', 'buffer_limit'])
 
 
 class Qnet(nn.Module):
@@ -23,7 +27,7 @@ class Qnet(nn.Module):
                                 out_channels=32,
                                 kernel_size=4,
                                 stride=2)
-        self._ln1 = nn.Linear()
+        self._ln1 = nn.Linear(256, 9)
 
     def forward(self):
         pass
@@ -31,11 +35,15 @@ class Qnet(nn.Module):
 
 class ReplayBuffer:
 
-    def __init__(self, buffer_limit):
-        self._buffer = collections.deque(maxlen=buffer_limit)
+    def __init__(self, parameter: HyperParameter):
+        self._buffer = collections.deque(maxlen=parameter.b)
 
-    def put(self, transition):
-        self._buffer.append(transition)
+    @property
+    def size(self):
+        return len(self._buffer)
+
+    def put(self, state, state_prime, action, reward, done):
+        self._buffer.append((state, state_prime, action, reward, done))
 
     def sample(self, n):
         mini_batch = random.sample(self._buffer, n)
@@ -62,11 +70,13 @@ class DQN:
 
         self._q_network = Qnet()
         self._target_network = Qnet()
-        self._replay_buffer = ReplayBuffer(buffer_limit=parameter.batch_size)
 
         self._optimizer = optim.Adam(self._q_network.parameters(), lr=parameter.learning_rate)
 
-    def behavior(self, state, epsilon):
+    def update_network(self):
+        self._target_network.load_state_dict(self._q_network.state_dict())
+
+    def predict(self, state, epsilon):
 
         out = self._q_network(state)
         r = random.random()
@@ -77,14 +87,10 @@ class DQN:
         else:
             return out.argmax().item()
 
-    def memorize(self, state, action, reward, state_prime, done):
+    def train(self, memory):
 
-        # state 전처리
-        self._replay_buffer.put((state, action, reward, state_prime, done))
-
-    def train(self):
         state_list, action_list, reward_list, state_prime_list, \
-        done_mask_list = self._replay_buffer.sample(self._PARAMETER.batch_size)
+        done_mask_list = memory.sample(self._PARAMETER.batch_size)
 
         output = self._q_network(state_list)
         q_action = output.gather(1, action_list)
@@ -130,7 +136,7 @@ class Environment(gym.Wrapper):
         self._eat_reward = reward_eat
         self._death_reward = reward_death
 
-        super(Environment, self).reset(**kwargs)
+        return super(Environment, self).reset(**kwargs)
 
     def step(self, action, agent=None):
         state_prime, reward, done, info = super(Environment, self).step(action)
@@ -165,9 +171,76 @@ class Environment(gym.Wrapper):
 
         return current_reward
 
+
+class Dataset:
+
+    @staticmethod
+    def preprocess_state(state):
+        # 주요 화면만 추출
+        state = state[1:172, 1:160]
+        r = state[:, :, 0]
+        g = state[:, :, 1]
+        b = state[:, :, 2]
+
+        rgb_array = np.asarray([r, g, b])
+
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((84, 84)),
+            transforms.ToTensor()
+        ])
+
+        return transform(rgb_array)
+
+
 if __name__ == '__main__':
     env = Environment()
     agent = Agent()
 
+    parameter = HyperParameter(
+        batch_size=32,
+        buffer_limit=50000,
+        gamma=0.98,
+        learning_rate=0.1
+    )
+
+    memory = ReplayBuffer(parameter)
+
+    dqn = DQN(parameter)
+    dqn.update_network()
+
+    print_interval = 20
+    score = 0.0
+
     for n_epi in range(1000):
-        pass
+        epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))
+
+        state = env.reset()
+        state = Dataset.preprocess_state(state)
+
+        done = False
+
+        while not done:
+            action = dqn.predict(state=state, epsilon=epsilon)
+            state_prime, reward, done = env.step(action, agent)
+
+            state_prime = Dataset.preprocess_state(state_prime)
+
+            memory.put(state=state,
+                       action=action,
+                       state_prime=state_prime,
+                       reward=reward,
+                       done=0 if done else 1)
+
+            state = state_prime
+
+            score += reward
+
+        if memory.size > 2000:
+            dqn.train(memory)
+
+        if n_epi % print_interval == 0 and n_epi != 0:
+            dqn.update_network()
+            print("n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
+                n_epi, score / print_interval, memory.size, epsilon * 100))
+            score = 0.0
