@@ -89,10 +89,6 @@ class DQN:
     def memory(self):
         return self._memory
 
-    @property
-    def network(self):
-        return self._target_network
-
     def update_network(self):
         self._target_network.load_state_dict(self._q_network.state_dict())
 
@@ -160,82 +156,57 @@ class Agent:
 
 
 class Environment(gym.Wrapper):
-    _move = -1
-    _eat = 50
-    _death = -1000
+    move = -1
+    eat = 50
+    death = -1000
 
     def __init__(self):
+        super(Environment, self).__init__(gym.make('MsPacman-v0'))
 
-        env = gym.make('MsPacman-v0')
+        self._move_reward = Environment.move
+        self._eat_reward = Environment.eat
+        self._death_reward = Environment.death
 
-        super(Environment, self).__init__(env)
-
-        self._move_reward = Environment._move
-        self._eat_reward = Environment._eat
-        self._death_reward = Environment._death
+        self._metadata = None
 
     def reset(self,
-              reward_move: int = _move,
-              reward_eat: int = _eat,
-              reward_death: int = _death,
+              reward_move: int = move,
+              reward_eat: int = eat,
+              reward_death: int = death,
               **kwargs):
 
         self._move_reward = reward_move
         self._eat_reward = reward_eat
         self._death_reward = reward_death
 
-        return super(Environment, self).reset(**kwargs)
+        state = super(Environment, self).reset(**kwargs)
+        return self.observation(state)
 
-    def step(self, action, agent=False):
+    def step(self, action):
         state_prime, reward, done, info = super(Environment, self).step(action)
 
-    #     self._update_agent(info, agent)
-    #
-    #     return state_prime, self.reward(reward, agent), done
-    #
-    # def _update_agent(self, info, agent):
-    #
-    #     if info['lives'] < agent.life:
-    #         agent.is_death = True
-    #         agent.life = info['lives']
-    #     else:
-    #         agent.is_death = False
-    #
-    # def reward(self,
-    #            reward: int,
-    #            agent: Agent):
-    #
-    #     current_reward = 0
-    #
-    #     # move
-    #     if reward == 0:
-    #         current_reward = Environment._move
-    #     # eat
-    #     elif reward == 10:
-    #         current_reward = Environment._eat
-    #
-    #     if agent.is_death:
-    #         current_reward = Environment._death
-    #
-    #     return current_reward
+        state_prime = self.observation(state_prime)
+        reward = self.reward(reward, info)
 
+        self._metadata = info
 
-//7## epsilon
+        return state_prime, reward, done, info
 
-class Preprocess(gym.RewardWrapper, gym.ObservationWrapper):
+    def reward(self, reward, info):
 
-    def __init__(self, env):
-        super().__init__(env)
+        new_reward = 0
 
-        self._
-
-    def reward(self, reward):
         # move
         if reward == 0:
-            current_reward = Environment._move
+            new_reward = self._move_reward
         # eat
         elif reward == 10:
-            current_reward = Environment._eat
+            new_reward = self._eat_reward
+
+        if self._metadata and self._metadata['lives'] > info['lives']:
+            new_reward -= 1000
+
+        return new_reward
 
     def observation(self, observation):
         observation = observation[1:172, 1:160]
@@ -247,21 +218,6 @@ class Preprocess(gym.RewardWrapper, gym.ObservationWrapper):
         ])
 
         return transform(observation)
-
-
-class Dataset:
-
-    @staticmethod
-    def preprocess_state(state):
-        # 주요 화면만 추출
-        state = state[1:172, 1:160]
-
-        transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((84, 84)),
-            transforms.ToTensor()
-        ])
-        return transform(state)
 
 
 if __name__ == '__main__':
