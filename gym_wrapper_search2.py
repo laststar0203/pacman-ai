@@ -79,22 +79,11 @@ class DQN:
         self._q_network = Qnet()
         self._target_network = Qnet()
 
-        self._memory = ReplayBuffer(parameter.buffer_limit)
-
         self._optimizer = optim.Adam(self._q_network.parameters(), lr=parameter.learning_rate)
-
-        self.update_network()
-
-    @property
-    def memory(self):
-        return self._memory
-
-    @property
-    def network(self):
-        return self._target_network
 
     def update_network(self):
         self._target_network.load_state_dict(self._q_network.state_dict())
+
 
     def predict(self, state, epsilon):
 
@@ -107,10 +96,10 @@ class DQN:
         else:
             return out.argmax().item()
 
-    def train(self):
+    def train(self, memory):
 
         state_list, action_list, reward_list, state_prime_list, \
-        done_mask_list = self._memory.sample(self._PARAMETER.batch_size)
+        done_mask_list = memory.sample(self._PARAMETER.batch_size)
 
         output = self._q_network(state_list)
         q_action = output.gather(1, action_list)
@@ -124,39 +113,12 @@ class DQN:
         loss.backward()
         self._optimizer.step()
 
-    def save(self):
-        pass
-
 
 class Agent:
 
-    def __init__(self, environment, algorithm: DQN):
-        self._environment = environment
-        self._algorithm = algorithm
-
-    @property
-    def algorithm(self):
-        return self._algorithm
-
-    def step(self, state, epsilon):
-        action = self._algorithm.predict(state=state, epsilon=epsilon)
-        state_prime, reward, done, info = self._environment.step(action, self)
-
-        self._algorithm.memory.put(
-            state=state,
-            state_prime=state_prime,
-            action=action,
-            reward=reward,
-            done=done
-        )
-
-        if self._algorithm.memory.size > 2000:
-            self._algorithm.train()
-
-        return state_prime, reward, done, info
-
-    def save(self):
-        self._algorithm.save()
+    def __init__(self):
+        self.life = 3
+        self.is_death = False
 
 
 class Environment(gym.Wrapper):
@@ -186,50 +148,27 @@ class Environment(gym.Wrapper):
 
         return super(Environment, self).reset(**kwargs)
 
-    def step(self, action, agent=False):
+    def step(self, action, agent=None):
         state_prime, reward, done, info = super(Environment, self).step(action)
 
-    #     self._update_agent(info, agent)
-    #
-    #     return state_prime, self.reward(reward, agent), done
-    #
-    # def _update_agent(self, info, agent):
-    #
-    #     if info['lives'] < agent.life:
-    #         agent.is_death = True
-    #         agent.life = info['lives']
-    #     else:
-    #         agent.is_death = False
-    #
-    # def reward(self,
-    #            reward: int,
-    #            agent: Agent):
-    #
-    #     current_reward = 0
-    #
-    #     # move
-    #     if reward == 0:
-    #         current_reward = Environment._move
-    #     # eat
-    #     elif reward == 10:
-    #         current_reward = Environment._eat
-    #
-    #     if agent.is_death:
-    #         current_reward = Environment._death
-    #
-    #     return current_reward
+        self._update_agent(info, agent)
 
+        return state_prime, self.reward(reward, agent), done
 
-//7## epsilon
+    def _update_agent(self, info, agent):
 
-class Preprocess(gym.RewardWrapper, gym.ObservationWrapper):
+        if info['lives'] < agent.life:
+            agent.is_death = True
+            agent.life = info['lives']
+        else:
+            agent.is_death = False
 
-    def __init__(self, env):
-        super().__init__(env)
+    def reward(self,
+               reward: int,
+               agent: Agent):
 
-        self._
+        current_reward = 0
 
-    def reward(self, reward):
         # move
         if reward == 0:
             current_reward = Environment._move
@@ -237,16 +176,10 @@ class Preprocess(gym.RewardWrapper, gym.ObservationWrapper):
         elif reward == 10:
             current_reward = Environment._eat
 
-    def observation(self, observation):
-        observation = observation[1:172, 1:160]
+        if agent.is_death:
+            current_reward = Environment._death
 
-        transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((84, 84)),
-            transforms.ToTensor()
-        ])
-
-        return transform(observation)
+        return current_reward
 
 
 class Dataset:
@@ -261,6 +194,7 @@ class Dataset:
             transforms.Resize((84, 84)),
             transforms.ToTensor()
         ])
+
         return transform(state)
 
 
@@ -276,7 +210,11 @@ if __name__ == '__main__':
     env = Environment()
     dqn = DQN(parameter=parameter)
 
-    agent = Agent(environment=env, algorithm=dqn)
+    agent = Agent()
+
+    memory = ReplayBuffer(parameter)
+
+    dqn.update_network()
 
     print_interval = 20
     score = 0.0
@@ -285,13 +223,28 @@ if __name__ == '__main__':
         epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))
 
         state = env.reset()
+        state = Dataset.preprocess_state(state)
+
         done = False
 
         while not done:
-            state_prime, reward, done, info = agent.step(state, epsilon)
+            action = dqn.predict(state=state, epsilon=epsilon)
+            state_prime, reward, done = env.step(action, agent)
+
+            state_prime = Dataset.preprocess_state(state_prime)
+
+            memory.put(state=state,
+                       action=action,
+                       state_prime=state_prime,
+                       reward=reward,
+                       done=0 if done else 1)
+
             state = state_prime
 
             score += reward
+
+        if memory.size > 2000:
+            dqn.train(memory)
 
         if n_epi % print_interval == 0 and n_epi != 0:
             dqn.update_network()
