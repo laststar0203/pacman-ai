@@ -1,34 +1,79 @@
 import gym
-import collections
+
 import random
+import collections
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-import numpy as np
+from torchvision import transforms
 
-# Hyperparameters
-learning_rate = 0.1
-gamma = 0.98
-buffer_limit = 50000
-batch_size = 32
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+HyperParameter = collections.namedtuple('HyperParameter',
+                                        ['batch_size', 'gamma', 'learning_rate', 'buffer_limit'])
+
+
+class Qnet(nn.Module):
+
+    def __init__(self):
+        super(Qnet, self).__init__()
+        self._conv1 = nn.Conv2d(in_channels=3,
+                                out_channels=16,
+                                kernel_size=8,
+                                stride=4,
+                                device=device)
+
+        self._bn1 = nn.BatchNorm2d(16, device=device)
+
+        self._conv2 = nn.Conv2d(in_channels=16,
+                                out_channels=32,
+                                kernel_size=4,
+                                stride=2,
+                                device=device)
+
+        self._bn2 = nn.BatchNorm2d(32,
+                                   device=device)
+
+        self._ln1 = nn.Linear(2592, 256,
+                              device=device)
+        self._ln2 = nn.Linear(256, 9,
+                              device=device)
+
+    def forward(self, x):
+        x = x.to(device)
+        x = F.relu(self._bn1(self._conv1(x)))
+        x = F.relu(self._bn2(self._conv2(x)))
+
+        x = x.view(-1) if x.dim() == 3 else x.view(x.shape[0], -1)
+
+        x = F.relu(self._ln1(x))
+        x = self._ln2(x)
+
+        return x
 
 
 class ReplayBuffer:
-    def __init__(self):
-        self.buffer = collections.deque(maxlen=buffer_limit)
 
-    def put(self, transition):
-        self.buffer.append(transition)
+    def __init__(self, buffer_limit):
+        self._buffer = collections.deque(maxlen=buffer_limit)
+
+    @property
+    def size(self):
+        return len(self._buffer)
+
+    def put(self, state, state_prime, action, reward, done):
+        self._buffer.append((state, state_prime, action, reward, done))
 
     def sample(self, n):
-        mini_batch = random.sample(self.buffer, n)
+        mini_batch = random.sample(self._buffer, n)
         state_list, action_list, reward_list, state_prime_list, done_mask_list = [], [], [], [], []
 
         for transition in mini_batch:
-            state, action, reward, state_prime, done_mask = transition
+            state, state_prime, action, reward, done_mask = transition
 
             state_list.append(state)
             action_list.append([action])
@@ -40,158 +85,185 @@ class ReplayBuffer:
                torch.tensor(reward_list), torch.stack(state_prime_list), \
                torch.tensor(done_mask_list)
 
-    def size(self):
-        return len(self.buffer)
+    def reset(self):
+        self._buffer.clear()
 
 
-class Qnet(nn.Module):
-    def __init__(self):
-        super(Qnet, self).__init__()
-        self._conv1 = nn.Conv2d(3, 16, (5, 3))
-        # self.bn1 = nn.BatchNorm2d(16)
-        self._max_pool1 = nn.MaxPool2d(kernel_size=(3, 2))
+class DQNAgent:
 
-        self._conv2 = nn.Conv2d(16, 32, (5, 3))
-        self._max_pool2 = nn.MaxPool2d(kernel_size=(3, 2))
-        # self.bn2 = nn.BatchNorm2d(32)
-        self._conv3 = nn.Conv2d(32, 32, (5, 3))
-        # self.bn3 = nn.BatchNorm2d(32)
-        self._max_pool3 = nn.MaxPool2d(kernel_size=(3, 2))
+    def __init__(self, param: HyperParameter, path=None):
+        self._PARAMETER = param
 
-        self._ln1 = nn.Linear(2304, 512)
-        self._ln2 = nn.Linear(512, 256)
-        self._ln3 = nn.Linear(256, 64)
-        self._ln4 = nn.Linear(64, 9)
+        self._memory = ReplayBuffer(param.buffer_limit)
 
-    def forward(self, x):
-
-        x = self._conv1(x)
-        x = F.relu(x)
-
-        x = self._max_pool1(x)
-
-        x = self._conv2(x)
-        x = F.relu(x)
-
-        x = self._max_pool2(x)
-
-        x = self._conv3(x)
-        x = F.relu(x)
-
-        x = self._max_pool3(x)
-
-        if x.dim() == 3:
-            x = x.view(-1)
+        if path:
+            self.load(path)
         else:
-            x = x.view(batch_size, -1)
+            self._policy_network = Qnet()
+            self._target_network = Qnet()
 
-        x = self._ln1(x)
-        x = F.relu(x)
+            self.update_network()
 
-        x = self._ln2(x)
-        x = F.relu(x)
+        self._optimizer = optim.Adam(self._policy_network.parameters(), lr=param.learning_rate)
 
-        x = self._ln3(x)
-        x = F.relu(x)
+    def update_network(self):
+        self._target_network.load_state_dict(self._policy_network.state_dict())
 
-        x = self._ln4(x)
+    def predict(self, state, epsilon):
 
-        return x
+        out = self._policy_network(state.unsqueeze(0))
 
-    def sample_action(self, obs, epsilon):
-        out = self.forward(obs)
-        coin = random.random()
-        if coin < epsilon:
+        print(out)
+        exit()
+
+        r = random.random()
+
+        # epsilon greedy
+        if r < epsilon:
             return random.randint(0, 8)
         else:
             return out.argmax().item()
 
+    def step(self, env, state, action):
 
-def train(q_network, target_network, memory, optimizer):
-    state_list, action_list, reward_list, state_prime_list, \
-    done_mask_list = memory.sample(batch_size)
+        state_prime, reward, done, info = env.step(action)
 
-    output = q_network(state_list)
-    q_action = output.gather(1, action_list)
+        self._memory.put(
+            state=state,
+            state_prime=state_prime,
+            action=action,
+            reward=reward,
+            done=done
+        )
+
+        return state_prime, reward, done, info
+
+    def train(self):
+        state_list, action_list, reward_list, state_prime_list, \
+        done_mask_list = self._memory.sample(self._PARAMETER.batch_size)
+
+        output = self._policy_network(state_list)
+        q_action = output.gather(1, action_list)
+
+        max_q_prime = self._target_network(state_prime_list).max(1)[0].unsqueeze(1)
+        target = reward_list + self._PARAMETER.gamma * max_q_prime * done_mask_list
+
+        loss = F.smooth_l1_loss(q_action, target)
+
+        self._optimizer.zero_grad()
+        loss.backward()
+        self._optimizer.step()
+
+    def save(self, path):
+        torch.save(self._policy_network.state_dict(), path)
+
+    def load(self, path):
+        self._policy_network = Qnet()
+        self._policy_network.load_state_dict(torch.load(path))
+        self._policy_network.eval()
+
+        self._memory.reset()
+
+        self.update_network()
 
 
-    max_q_prime = target_network(state_prime_list).max(1)[0].unsqueeze(1)
-    target = reward_list + gamma * max_q_prime * done_mask_list
-    loss = F.smooth_l1_loss(q_action, target)
+class Environment(gym.Wrapper):
+    move = 0
+    eat = 50
+    death = -1000
 
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+    def __init__(self):
+        super(Environment, self).__init__(gym.make('MsPacman-v0'))
 
+        self._move_reward = Environment.move
+        self._eat_reward = Environment.eat
+        self._death_reward = Environment.death
 
-def preproess_state(state):
-    state = state[1:172, 1:160]
-    r = state[:, :, 0]
-    g = state[:, :, 1]
-    b = state[:, :, 2]
+        self._metadata = None
 
-    return np.asarray([r, g, b])
+    def reset(self,
+              reward_move: int = move,
+              reward_eat: int = eat,
+              reward_death: int = death,
+              **kwargs):
+
+        self._move_reward = reward_move
+        self._eat_reward = reward_eat
+        self._death_reward = reward_death
+
+        state = super(Environment, self).reset(**kwargs)
+        return self.observation(state)
+
+    def step(self, action):
+        state_prime, reward, done, info = super(Environment, self).step(action)
+
+        state_prime = self.observation(state_prime)
+        reward = self.reward(reward, info)
+
+        self._metadata = info
+
+        return state_prime, reward, done, info
+
+    def reward(self, reward, info):
+
+        new_reward = 0
+
+        # move
+        if reward == 0:
+            new_reward = self._move_reward
+        # eat
+        elif reward == 10:
+            new_reward = self._eat_reward
+
+        if self._metadata and self._metadata['lives'] > info['lives']:
+            new_reward -= 1000
+
+        return new_reward
+
+    def observation(self, observation):
+        observation = observation[1:172, 1:160]
+
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize((84, 84)),
+            transforms.ToTensor()
+        ])
+
+        return transform(observation)
 
 
 if __name__ == '__main__':
-    env = gym.make('MsPacman-v0')
 
-    q_network = Qnet()
-    target_network = Qnet()
-    target_network.load_state_dict(q_network.state_dict())
+    parameter = HyperParameter(
+        batch_size=32,
+        buffer_limit=50000,
+        gamma=0.98,
+        learning_rate=0.1
+    )
 
-    memory = ReplayBuffer()
+    env = Environment()
+    agent = DQNAgent(param=parameter)
 
     print_interval = 20
     score = 0.0
-    optimizer = optim.Adam(q_network.parameters(), lr=learning_rate)
 
-    render = False
-
-    for n_epi in range(10000):
+    for n_epi in range(1000):
         epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))
 
         state = env.reset()
-        state = torch.tensor(preproess_state(state)).float()
         done = False
 
         while not done:
+            action = agent.predict(state, epsilon)
+            state_prime, reward, done, info = agent.step(env, state, action)
 
-            # 순전파를 통한 액션 도출
-            action = q_network.sample_action(state, epsilon)
-            state_prime, reward, done, info = env.step(action)
-
-            reward = -1 if reward == 0 else reward
-
-            state_prime = torch.tensor(preproess_state(state_prime)).float()
-
-            done_mask = 0.0 if done else 1.0
-
-            memory.put((state, action, reward, state_prime, done_mask))
             state = state_prime
 
             score += reward
 
-            if render:
-                env.render()
-                import time
-                time.sleep(0.01)
-
-            if done:
-                break
-
-        if memory.size() > 2000:
-            # 순전파, 역전파를 통한 학습
-            train(q_network, target_network, memory, optimizer)
-
-        if score / print_interval > 700:
-            render = True
-
-
         if n_epi % print_interval == 0 and n_epi != 0:
-            target_network.load_state_dict(q_network.state_dict())
-            print("n_episode :{}, score : {:.1f}, n_buffer : {}, eps : {:.1f}%".format(
-                n_epi, score / print_interval, memory.size(), epsilon * 100))
-            score = 0.0
+            agent.update_network()
 
-    env.close()
+            print("n_episode :{}, score : {:.1f}, eps : {:.1f}%".format(
+                n_epi, score / print_interval, epsilon * 100))
+            score = 0.0
