@@ -12,7 +12,6 @@ from torchvision import transforms
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 HyperParameter = collections.namedtuple('HyperParameter',
                                         ['batch_size', 'gamma', 'learning_rate', 'buffer_limit'])
 
@@ -21,36 +20,85 @@ class Qnet(nn.Module):
 
     def __init__(self):
         super(Qnet, self).__init__()
-        self._conv1 = nn.Conv2d(in_channels=3,
-                                out_channels=16,
-                                kernel_size=8,
-                                stride=4,
-                                device=device)
+        # self._conv1 = nn.Conv2d(in_channels=3,
+        #                         out_channels=16,
+        #                         kernel_size=8,
+        #                         stride=4,
+        #                         device=device)
+        #
+        # self._bn1 = nn.BatchNorm2d(16, device=device)
+        #
+        # self._conv2 = nn.Conv2d(in_channels=16,
+        #                         out_channels=32,
+        #                         kernel_size=4,
+        #                         stride=2,
+        #                         device=device)
+        #
+        # self._bn2 = nn.BatchNorm2d(32,
+        #                            device=device)
+        #
+        # self._ln1 = nn.Linear(2592, 256,
+        #                       device=device)
+        # self._ln2 = nn.Linear(256, 9,
+        #                       device=device)
 
-        self._bn1 = nn.BatchNorm2d(16, device=device)
+        self._conv1 = nn.Sequential(
+            nn.Conv2d(
+                in_channels=3,
+                out_channels=32,
+                kernel_size=2,
+                padding=(1, 1),
+                device=device),
+            nn.BatchNorm2d(32, device=device),
+            nn.ReLU()
+        )
 
-        self._conv2 = nn.Conv2d(in_channels=16,
-                                out_channels=32,
-                                kernel_size=4,
-                                stride=2,
-                                device=device)
+        self._mp1 = nn.MaxPool2d(kernel_size=2)
 
-        self._bn2 = nn.BatchNorm2d(32,
-                                   device=device)
+        self._conv2 = nn.Sequential(
+            nn.Conv2d(in_channels=32,
+                      out_channels=128,
+                      kernel_size=3,
+                      device=device),
+            nn.BatchNorm2d(128, device=device),
+            nn.ReLU()
+        )
 
-        self._ln1 = nn.Linear(2592, 256,
-                              device=device)
+        self._mp2 = nn.MaxPool2d(kernel_size=2)
+
+        self._conv3 = nn.Sequential(
+            nn.Conv2d(in_channels=128,
+                      out_channels=256,
+                      kernel_size=4,
+                      device=device),
+            nn.BatchNorm2d(256, device=device),
+            nn.ReLU()
+        )
+
+        self._mp3 = nn.MaxPool2d(kernel_size=2)
+
+        self._ln1 = nn.Sequential(
+            nn.Linear(16384, 256, device=device),
+            nn.ReLU()
+        )
+
         self._ln2 = nn.Linear(256, 9,
                               device=device)
 
     def forward(self, x):
         x = x.to(device)
-        x = F.relu(self._bn1(self._conv1(x)))
-        x = F.relu(self._bn2(self._conv2(x)))
+        x = self._conv1(x)
+        x = self._mp1(x)
+
+        x = self._conv2(x)
+        x = self._mp2(x)
+
+        x = self._conv3(x)
+        x = self._mp3(x)
 
         x = x.view(-1) if x.dim() == 3 else x.view(x.shape[0], -1)
 
-        x = F.relu(self._ln1(x))
+        x = self._ln1(x)
         x = self._ln2(x)
 
         return x
@@ -93,6 +141,8 @@ class DQNAgent:
 
     def __init__(self, param: HyperParameter, path=None):
         self._PARAMETER = param
+        self._policy_network = None
+        self._target_network = None
 
         self._memory = ReplayBuffer(param.buffer_limit)
 
@@ -112,9 +162,6 @@ class DQNAgent:
     def predict(self, state, epsilon):
 
         out = self._policy_network(state.unsqueeze(0))
-
-        print(out)
-        exit()
 
         r = random.random()
 
@@ -159,6 +206,8 @@ class DQNAgent:
 
     def load(self, path):
         self._policy_network = Qnet()
+        self._target_network = Qnet()
+
         self._policy_network.load_state_dict(torch.load(path))
         self._policy_network.eval()
 
@@ -168,41 +217,49 @@ class DQNAgent:
 
 
 class Environment(gym.Wrapper):
-    move = 0
-    eat = 50
+    move = -1
+    eat_cookie = 100
+    eat_ghost = 0
     death = -1000
 
     def __init__(self):
         super(Environment, self).__init__(gym.make('MsPacman-v0'))
 
         self._move_reward = Environment.move
-        self._eat_reward = Environment.eat
+        self._eat_cookie_reward = Environment.eat_cookie
         self._death_reward = Environment.death
-
-        self._metadata = None
+        self._eat_ghost_reward = Environment.eat_ghost
 
     def reset(self,
-              reward_move: int = move,
-              reward_eat: int = eat,
-              reward_death: int = death,
+              move_reward: int = move,
+              eat_cookie_reward: int = eat_cookie,
+              death_reward: int = death,
+              eat_ghost_reward: int = eat_ghost,
               **kwargs):
 
-        self._move_reward = reward_move
-        self._eat_reward = reward_eat
-        self._death_reward = reward_death
+        self._move_reward = move_reward
+        self._eat_cookie_reward = eat_cookie_reward
+        self._death_reward = death_reward
+        self._eat_ghost_reward = eat_ghost_reward
+
+        self._metadata = {
+            'lives': 3,
+            'get_coin': 0
+        }
 
         state = super(Environment, self).reset(**kwargs)
         return self.observation(state)
 
     def step(self, action):
+
         state_prime, reward, done, info = super(Environment, self).step(action)
 
         state_prime = self.observation(state_prime)
-        reward = self.reward(reward, info)
+        new_reward = self.reward(reward, info)
 
-        self._metadata = info
+        self._metadata['lives'] = info['lives']
 
-        return state_prime, reward, done, info
+        return state_prime, new_reward, done, info
 
     def reward(self, reward, info):
 
@@ -213,23 +270,25 @@ class Environment(gym.Wrapper):
             new_reward = self._move_reward
         # eat
         elif reward == 10:
-            new_reward = self._eat_reward
+            new_reward = self._eat_cookie_reward
+            self._metadata['get_coin'] += 1
+        elif reward == 200:
+            new_reward = self._eat_ghost_reward
 
-        if self._metadata and self._metadata['lives'] > info['lives']:
-            new_reward -= 1000
+        if self._metadata['lives'] > info['lives'] != 3:
+            new_reward += self._death_reward * (1 - (self._metadata['get_coin'] % 150) / 150)
+            self._metadata['get_coin'] = 0 # 한 목숨당 처리하도록? 처음에 많이 먹고 나중에 ㅈㄴ 놀수 있으니깐..?
 
         return new_reward
 
     def observation(self, observation):
-        observation = observation[1:172, 1:160]
-
         transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((84, 84)),
+            transforms.Resize((110, 84)),
             transforms.ToTensor()
         ])
 
-        return transform(observation)
+        return transform(observation)[:84, :84]
 
 
 if __name__ == '__main__':
