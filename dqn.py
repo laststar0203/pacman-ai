@@ -45,40 +45,28 @@ class Qnet(nn.Module):
         self._conv1 = nn.Sequential(
             nn.Conv2d(
                 in_channels=3,
-                out_channels=32,
+                out_channels=16,
                 kernel_size=2,
-                padding=(1, 1),
                 device=device),
-            nn.BatchNorm2d(32, device=device),
+            nn.BatchNorm2d(16, device=device),
             nn.ReLU()
         )
 
         self._mp1 = nn.MaxPool2d(kernel_size=2)
 
         self._conv2 = nn.Sequential(
-            nn.Conv2d(in_channels=32,
-                      out_channels=128,
-                      kernel_size=3,
+            nn.Conv2d(in_channels=16,
+                      out_channels=32,
+                      kernel_size=2,
                       device=device),
-            nn.BatchNorm2d(128, device=device),
+            nn.BatchNorm2d(32, device=device),
             nn.ReLU()
         )
 
-        self._mp2 = nn.MaxPool2d(kernel_size=2)
-
-        self._conv3 = nn.Sequential(
-            nn.Conv2d(in_channels=128,
-                      out_channels=256,
-                      kernel_size=4,
-                      device=device),
-            nn.BatchNorm2d(256, device=device),
-            nn.ReLU()
-        )
-
-        self._mp3 = nn.MaxPool2d(kernel_size=2)
+        self._mp2 = nn.MaxPool2d(kernel_size=3)
 
         self._ln1 = nn.Sequential(
-            nn.Linear(16384, 256, device=device),
+            nn.Linear(32768, 256, device=device),
             nn.ReLU()
         )
 
@@ -92,9 +80,6 @@ class Qnet(nn.Module):
 
         x = self._conv2(x)
         x = self._mp2(x)
-
-        x = self._conv3(x)
-        x = self._mp3(x)
 
         x = x.view(-1) if x.dim() == 3 else x.view(x.shape[0], -1)
 
@@ -272,8 +257,8 @@ class Environment(gym.Wrapper):
         elif reward == 10:
             new_reward = self._eat_cookie_reward
             self._metadata['get_coin'] += 1
-        elif reward == 200:
-            new_reward = self._eat_ghost_reward
+        else:
+            new_reward = 0
 
         if self._metadata['lives'] > info['lives'] != 3:
             new_reward += self._death_reward * (1 - (self._metadata['get_coin'] % 150) / 150)
@@ -282,13 +267,15 @@ class Environment(gym.Wrapper):
         return new_reward
 
     def observation(self, observation):
+        observation = observation[1:172, 1:160]
+
         transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((110, 84)),
+            transforms.Resize((200, 200)),
             transforms.ToTensor()
         ])
 
-        return transform(observation)[:84, :84]
+        return transform(observation)
 
 
 if __name__ == '__main__':
