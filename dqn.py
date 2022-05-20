@@ -66,11 +66,16 @@ class Qnet(nn.Module):
         self._mp2 = nn.MaxPool2d(kernel_size=3)
 
         self._ln1 = nn.Sequential(
-            nn.Linear(32768, 256, device=device),
+            nn.Linear(32768, 1024, device=device),
             nn.ReLU()
         )
 
-        self._ln2 = nn.Linear(256, 9,
+        self._ln2 = nn.Sequential(
+            nn.Linear(1024, 256, device=device),
+            nn.ReLU()
+        )
+
+        self._ln3 = nn.Linear(256, 9,
                               device=device)
 
     def forward(self, x):
@@ -85,6 +90,7 @@ class Qnet(nn.Module):
 
         x = self._ln1(x)
         x = self._ln2(x)
+        x = self._ln3(x)
 
         return x
 
@@ -203,9 +209,9 @@ class DQNAgent:
 
 class Environment(gym.Wrapper):
     move = -1
-    eat_cookie = 100
+    eat_cookie = 10
     eat_ghost = 0
-    death = -1000
+    death = -2
 
     def __init__(self):
         super(Environment, self).__init__(gym.make('MsPacman-v0'))
@@ -256,13 +262,13 @@ class Environment(gym.Wrapper):
         # eat
         elif reward == 10:
             new_reward = self._eat_cookie_reward
-            self._metadata['get_coin'] += 1
+            # self._metadata['get_coin'] += 1
         else:
             new_reward = 0
 
         if self._metadata['lives'] > info['lives'] != 3:
-            new_reward += self._death_reward * (1 - (self._metadata['get_coin'] % 150) / 150)
-            self._metadata['get_coin'] = 0 # 한 목숨당 처리하도록? 처음에 많이 먹고 나중에 ㅈㄴ 놀수 있으니깐..?
+            # new_reward += self._death_reward * (1 - (self._metadata['get_coin'] % 150) / 150)
+            new_reward += self._death_reward
 
         return new_reward
 
@@ -284,7 +290,7 @@ if __name__ == '__main__':
         batch_size=32,
         buffer_limit=50000,
         gamma=0.98,
-        learning_rate=0.1
+        learning_rate=0.001
     )
 
     env = Environment()
