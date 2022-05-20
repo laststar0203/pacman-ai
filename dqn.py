@@ -66,11 +66,16 @@ class Qnet(nn.Module):
         self._mp2 = nn.MaxPool2d(kernel_size=3)
 
         self._ln1 = nn.Sequential(
-            nn.Linear(32768, 1024, device=device),
+            nn.Linear(12800, 4096, device=device),
             nn.ReLU()
         )
 
         self._ln2 = nn.Sequential(
+            nn.Linear(4096, 1024, device=device),
+            nn.ReLU()
+        )
+
+        self._ln3 = nn.Sequential(
             nn.Linear(1024, 256, device=device),
             nn.ReLU()
         )
@@ -91,6 +96,7 @@ class Qnet(nn.Module):
         x = self._ln1(x)
         x = self._ln2(x)
         x = self._ln3(x)
+        x = self._ln4(x)
 
         return x
 
@@ -221,6 +227,8 @@ class Environment(gym.Wrapper):
         self._death_reward = Environment.death
         self._eat_ghost_reward = Environment.eat_ghost
 
+        self._observation_queue = []
+
     def reset(self,
               move_reward: int = move,
               eat_cookie_reward: int = eat_cookie,
@@ -273,15 +281,26 @@ class Environment(gym.Wrapper):
         return new_reward
 
     def observation(self, observation):
-        observation = observation[1:172, 1:160]
 
         transform = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize((200, 200)),
+            transforms.Grayscale(num_output_channels=1),
+            transforms.Resize((110, 84)),
             transforms.ToTensor()
         ])
 
-        return transform(observation)
+        current = transform(observation)[:84, :84]
+
+        if len(self._observation_queue) < 2:
+            first = current
+            second = current
+        else:
+            first = self._observation_queue.pop(0)
+            second = self._observation_queue[0]
+
+        self._observation_queue.append(current)
+
+        return torch.cat([first, second, current])
 
 
 if __name__ == '__main__':
