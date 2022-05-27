@@ -1,104 +1,20 @@
 import gym
 
+import torch
 import random
 import collections
 
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
 from torchvision import transforms
 
+from network import DeepmindNet
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 HyperParameter = collections.namedtuple('HyperParameter',
                                         ['batch_size', 'gamma', 'learning_rate', 'buffer_limit'])
-
-
-class Qnet(nn.Module):
-
-    def __init__(self):
-        super(Qnet, self).__init__()
-        # self._conv1 = nn.Conv2d(in_channels=3,
-        #                         out_channels=16,
-        #                         kernel_size=8,
-        #                         stride=4,
-        #                         device=device)
-        #
-        # self._bn1 = nn.BatchNorm2d(16, device=device)
-        #
-        # self._conv2 = nn.Conv2d(in_channels=16,
-        #                         out_channels=32,
-        #                         kernel_size=4,
-        #                         stride=2,
-        #                         device=device)
-        #
-        # self._bn2 = nn.BatchNorm2d(32,
-        #                            device=device)
-        #
-        # self._ln1 = nn.Linear(2592, 256,
-        #                       device=device)
-        # self._ln2 = nn.Linear(256, 9,
-        #                       device=device)
-
-        self._conv1 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=3,
-                out_channels=16,
-                kernel_size=2,
-                device=device),
-            nn.BatchNorm2d(16, device=device),
-            nn.ReLU()
-        )
-
-        self._mp1 = nn.MaxPool2d(kernel_size=2)
-
-        self._conv2 = nn.Sequential(
-            nn.Conv2d(in_channels=16,
-                      out_channels=32,
-                      kernel_size=2,
-                      device=device),
-            nn.BatchNorm2d(32, device=device),
-            nn.ReLU()
-        )
-
-        self._mp2 = nn.MaxPool2d(kernel_size=3)
-
-        self._ln1 = nn.Sequential(
-            nn.Linear(12800, 4096, device=device),
-            nn.ReLU()
-        )
-
-        self._ln2 = nn.Sequential(
-            nn.Linear(4096, 1024, device=device),
-            nn.ReLU()
-        )
-
-        self._ln3 = nn.Sequential(
-            nn.Linear(1024, 256, device=device),
-            nn.ReLU()
-        )
-
-        self._ln3 = nn.Linear(256, 9,
-                              device=device)
-
-    def forward(self, x):
-        x = x.to(device)
-        x = self._conv1(x)
-        x = self._mp1(x)
-
-        x = self._conv2(x)
-        x = self._mp2(x)
-
-        x = x.view(-1) if x.dim() == 3 else x.view(x.shape[0], -1)
-
-        x = self._ln1(x)
-        x = self._ln2(x)
-        x = self._ln3(x)
-        x = self._ln4(x)
-
-        return x
 
 
 class ReplayBuffer:
@@ -126,9 +42,9 @@ class ReplayBuffer:
             state_prime_list.append(state_prime)
             done_mask_list.append([done_mask])
 
-        return torch.stack(state_list), torch.tensor(action_list), \
-               torch.tensor(reward_list), torch.stack(state_prime_list), \
-               torch.tensor(done_mask_list)
+        return torch.stack(state_list), torch.tensor(action_list, device=device), \
+               torch.tensor(reward_list, device=device), torch.stack(state_prime_list), \
+               torch.tensor(done_mask_list, device=device)
 
     def reset(self):
         self._buffer.clear()
@@ -146,8 +62,8 @@ class DQNAgent:
         if path:
             self.load(path)
         else:
-            self._policy_network = Qnet()
-            self._target_network = Qnet()
+            self._policy_network = DeepmindNet()
+            self._target_network = DeepmindNet()
 
             self.update_network()
 
@@ -177,7 +93,7 @@ class DQNAgent:
             state_prime=state_prime,
             action=action,
             reward=reward,
-            done=done
+            done=0 if done else 1
         )
 
         return state_prime, reward, done, info
@@ -199,11 +115,13 @@ class DQNAgent:
         self._optimizer.step()
 
     def save(self, path):
-        torch.save(self._policy_network.state_dict(), path)
+        """ 모델을 파일시스템에 저장 """
+        torch.save(self._target_network.state_dict(), path)
 
     def load(self, path):
-        self._policy_network = Qnet()
-        self._target_network = Qnet()
+        """ 파일시스템에 저장되어있는 모델을 불러옴 """
+        self._policy_network = DeepmindNet()
+        self._target_network = DeepmindNet()
 
         self._policy_network.load_state_dict(torch.load(path))
         self._policy_network.eval()
@@ -214,39 +132,14 @@ class DQNAgent:
 
 
 class Environment(gym.Wrapper):
-    move = -1
-    eat_cookie = 10
-    eat_ghost = 0
-    death = -2
-
     def __init__(self):
         super(Environment, self).__init__(gym.make('MsPacman-v0'))
 
-        self._move_reward = Environment.move
-        self._eat_cookie_reward = Environment.eat_cookie
-        self._death_reward = Environment.death
-        self._eat_ghost_reward = Environment.eat_ghost
-
         self._observation_queue = []
 
-    def reset(self,
-              move_reward: int = move,
-              eat_cookie_reward: int = eat_cookie,
-              death_reward: int = death,
-              eat_ghost_reward: int = eat_ghost,
-              **kwargs):
-
-        self._move_reward = move_reward
-        self._eat_cookie_reward = eat_cookie_reward
-        self._death_reward = death_reward
-        self._eat_ghost_reward = eat_ghost_reward
-
-        self._metadata = {
-            'lives': 3,
-            'get_coin': 0
-        }
-
+    def reset(self, **kwargs):
         state = super(Environment, self).reset(**kwargs)
+
         return self.observation(state)
 
     def step(self, action):
@@ -254,34 +147,16 @@ class Environment(gym.Wrapper):
         state_prime, reward, done, info = super(Environment, self).step(action)
 
         state_prime = self.observation(state_prime)
-        new_reward = self.reward(reward, info)
 
-        self._metadata['lives'] = info['lives']
-
-        return state_prime, new_reward, done, info
-
-    def reward(self, reward, info):
-
-        new_reward = 0
-
-        # move
-        if reward == 0:
-            new_reward = self._move_reward
-        # eat
-        elif reward == 10:
-            new_reward = self._eat_cookie_reward
-            # self._metadata['get_coin'] += 1
-        else:
-            new_reward = 0
-
-        if self._metadata['lives'] > info['lives'] != 3:
-            # new_reward += self._death_reward * (1 - (self._metadata['get_coin'] % 150) / 150)
-            new_reward += self._death_reward
-
-        return new_reward
+        return state_prime, done, info
 
     def observation(self, observation):
+        """
+        MsPacman-v0 는 기본으로 이미지 형태로 제공 shape=(210, 160, 3),
+        이를 컬러를 지운 3 프레임으로 구성된 이미지 형태로 전처리 한다. shape=(3, 84, 84)
+         """
 
+        # 컬러를 지운후 84X84 이미지로 변환 후 학습을 위해 tensor 로 변환
         transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Grayscale(num_output_channels=1),
@@ -291,48 +166,81 @@ class Environment(gym.Wrapper):
 
         current = transform(observation)[:84, :84]
 
+        """
+        저장해둔 이전 상태 이미지 2개를 병합하여 3 프레임으로 구성된 state 값을 만듬
+
+        현재 상태 = C 일때
+        A -> B -> C 순으로 상태가 변화했다 가정하면
+
+        (큐 크기가 0 ~ 1개 일 경우)
+            [    ] -> C C C
+            [B   ] -> C C C
+        (큐 크기가 2 개 일 경우)
+            [A, B] -> A B C
+
+        """
+
+        frame = [None, None, None]
+
         if len(self._observation_queue) < 2:
-            first = current
-            second = current
+            frame[0] = current
+            frame[1] = current
         else:
-            first = self._observation_queue.pop(0)
-            second = self._observation_queue[0]
+            frame[0] = self._observation_queue.pop(0)
+            frame[1] = self._observation_queue[0]
+
+        frame[2] = current
 
         self._observation_queue.append(current)
 
-        return torch.cat([first, second, current])
+        return torch.cat(frame)
 
 
 if __name__ == '__main__':
 
+    # init part
     parameter = HyperParameter(
-        batch_size=32,
-        buffer_limit=50000,
-        gamma=0.98,
-        learning_rate=0.001
+        batch_size=32,  # 한 학습당 사용되는 데이터 개수 (batch 크기)
+        buffer_limit=100000,  # replay buffer 최대 사이즈
+        gamma=0.98,  # 감쇄율 (Q-learning 포함)
+        learning_rate=0.00025  # 학습률
     )
 
     env = Environment()
     agent = DQNAgent(param=parameter)
 
-    print_interval = 20
+    # target network를 업데이트 하는 주기
+    print_interval = 100
     score = 0.0
 
-    for n_epi in range(1000):
-        epsilon = max(0.01, 0.08 - 0.01 * (n_epi / 200))
+    for n_epi in range(100000):
+        # e-greedy 행동 결정에 사용되는 epsilon, 에피소드가 지날 수록 값을 줄어나가게 함
+        epsilon = max(0.1, 1 - n_epi / 100000)
 
         state = env.reset()
         done = False
 
+        action_list = []
+        episode_reward = 0
+
         while not done:
+            # agent가 결정한 다음 행동
             action = agent.predict(state, epsilon)
+
+            # 행동을 취한 후 결과로 S', R, 메타정보 등을 받음
             state_prime, reward, done, info = agent.step(env, state, action)
 
             state = state_prime
 
             score += reward
 
+        # 에피소드가 끝날때마다 학습을 진행
+        # 초기에는 학습 데이터가 적고, 학습 가치가 적으므로 충분히 Replay Buffer 에 쌓은 다음 학습 수행
+        if agent._memory.size > 2000:
+            agent.train()
+
         if n_epi % print_interval == 0 and n_epi != 0:
+            # target network 업데이트
             agent.update_network()
 
             print("n_episode :{}, score : {:.1f}, eps : {:.1f}%".format(
