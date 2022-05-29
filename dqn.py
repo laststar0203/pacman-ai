@@ -149,7 +149,7 @@ class DQNAgent:
 class Environment(gym.Wrapper):
 
     def __init__(self):
-        super(Environment, self).__init__(gym.make('ALE/MsPacman-v5'))
+        super(Environment, self).__init__(gym.make('MsPacman-v4'))
 
         self._observation_queue = []
 
