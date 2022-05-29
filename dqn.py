@@ -4,6 +4,8 @@ import torch
 import random
 import collections
 
+import numpy as np
+
 import torch.nn.functional as F
 import torch.optim as optim
 
@@ -96,9 +98,12 @@ class DQNAgent:
 
     def train(self):
 
+        loss_list = []
+
+        # 학습 데이터를 랜덤으로 추출
+        state_list, action_list, reward_list, state_prime_list = self._memory.sample(self._PARAMETER.batch_size)
+
         for _ in range(self._PARAMETER.epoch):
-            # 학습 데이터를 랜덤으로 추출
-            state_list, action_list, reward_list, state_prime_list = self._memory.sample(self._PARAMETER.batch_size)
 
             # 행동 정책 q-value
             output = self._policy_network(state_list)
@@ -115,10 +120,14 @@ class DQNAgent:
             loss.backward()
             self._optimizer.step()
 
+            loss_list.append(float(loss))
+
         if self._train_count % self._PARAMETER.update_period == 0:
             self.update_network()
 
         self._train_count += 1
+
+        return np.array(loss_list)
 
     def save(self, path):
         """ 모델을 파일시스템에 저장 """
@@ -201,5 +210,3 @@ class Environment(gym.Wrapper):
         self._observation_queue.append(current)
 
         return torch.cat(frame)
-
-
